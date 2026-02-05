@@ -1,0 +1,5 @@
+../mylib/Src/mylib.c:15:6:HAL_UARTEx_RxEventCallback	2
+../mylib/Src/mylib.c:22:6:take_uart	4
+../mylib/Src/mylib.c:54:6:read_sensor	2
+../mylib/Src/mylib.c:76:6:display_to_lcd	5
+../mylib/Src/mylib.c:102:6:give_uart	8
