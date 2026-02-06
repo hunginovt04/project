@@ -1,0 +1,30 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Debug STM32 (OpenOCD)",   
+            "type": "cortex-debug",          
+            "request": "launch",             
+            "servertype": "openocd",         
+            "cwd": "${workspaceRoot}",       
+
+            "executable": "./build/Debug/Simple_TT_Scheduler.elf", 
+
+            "configFiles": [
+                "interface/stlink.cfg",      
+                "target/stm32f1x.cfg"        
+            ],
+            
+            "runToEntryPoint": "main",       
+            "showDevDebugOutput": "none",
+            "liveWatch": {
+                "enabled": true,
+                "samplesPerSecond": 10,
+            } 
+        }
+
+    ]
+}

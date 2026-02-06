@@ -47,5 +47,7 @@ void send_log_uart(void);
 // Hàm bổ trợ (Low level)
 void display_to_lcd(data_sht3x val);
 void give_uart(data_uart val);
+typedef void (*TaskFunction_t)(void);
+
 
 #endif

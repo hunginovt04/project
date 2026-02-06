@@ -101,7 +101,7 @@ void display_to_lcd(data_sht3x val) {
     int t = (int)((val.value - n) * 10);
 
     if (val.type == HUMID) {
-        snprintf(str, sizeof(str), "H:%d.%d%%", n, t);
+        snprintf(str, sizeof(str), "H:%d.%d%% ", n, t);
         lcd_gotoxy(program.hlcd1, 0, 0);
     } else if (val.type == TEMP) {
         snprintf(str, sizeof(str), "T:%d.%d", n, t);

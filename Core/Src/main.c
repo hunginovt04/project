@@ -1,20 +1,20 @@
 /* USER CODE BEGIN Header */
 /**
-  ******************************************************************************
-  * @file           : main.c
-  * @brief          : Main program body
-  ******************************************************************************
-  * @attention
-  *
-  * Copyright (c) 2026 STMicroelectronics.
-  * All rights reserved.
-  *
-  * This software is licensed under terms that can be found in the LICENSE file
-  * in the root directory of this software component.
-  * If no LICENSE file comes with this software, it is provided AS-IS.
-  *
-  ******************************************************************************
-  */
+ ******************************************************************************
+ * @file           : main.c
+ * @brief          : Main program body
+ ******************************************************************************
+ * @attention
+ *
+ * Copyright (c) 2026 STMicroelectronics.
+ * All rights reserved.
+ *
+ * This software is licensed under terms that can be found in the LICENSE file
+ * in the root directory of this software component.
+ * If no LICENSE file comes with this software, it is provided AS-IS.
+ *
+ ******************************************************************************
+ */
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
@@ -22,6 +22,8 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "mylib.h"
+#include <string.h>
+#include <stdio.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -47,18 +49,39 @@ TIM_HandleTypeDef htim2;
 UART_HandleTypeDef huart1;
 DMA_HandleTypeDef hdma_usart1_rx;
 
+I2C_LCD_HandleTypeDef hlcd1; // Tên phải khớp với biến trong i2c_lcd.c
+sht3x_handle_t hsht3x;       // Tên phải khớp với biến khởi tạo SHT3x
+uint8_t rx_buffer[15];       // Biến này bạn đã khai báo bên mylib.c
+char disp[16];
 /* USER CODE BEGIN PV */
-volatile uint8_t timer_flag = 0; // Cờ báo hiệu đến chu kỳ P
-//uint32_t period_p = 100;         // Ví dụ chu kỳ P là 100ms (dùng để quan sát/logic)
-
 hTask program;
+volatile uint32_t tick_count = 0; // Biến đếm nhịp tim hệ thống
+// Cờ báo hiệu đến chu kỳ P
+// uint32_t period_p = 100;         // Ví dụ chu kỳ P là 100ms (dùng để quan sát/logic)
 
-void Update_Scheduler_Period(uint32_t new_p_ms);
+void UART_SendString(char *str)
+{
+  // Sử dụng HAL_UART_Transmit để gửi chuỗi
+  // strlen(str) tự động tính toán độ dài chuỗi truyền vào
+  // Timeout 100ms để đảm bảo không bị treo nếu bus UART bận
+  HAL_UART_Transmit(&huart1, (uint8_t *)str, strlen(str), 100);
+}
+
+TaskFunction_t TaskTable[] =
+    {
+        update_sensor_data, // k=0
+        display_temp,       // k=1
+        display_humid,      // k=2
+        send_humid_uart,
+        send_temp_uart // k=3
+};
+
+#define TASK_COUNT (sizeof(TaskTable) / sizeof(TaskTable[0]))
 
 // Khai báo các Task
-//void Task1(void);
-//void Task2(void);
-//void Task3(void);
+// void Task1(void);
+// void Task2(void);
+// void Task3(void);
 
 /* USER CODE END PV */
 
@@ -79,13 +102,19 @@ static void MX_USART1_UART_Init(void);
 /* USER CODE END 0 */
 
 /**
-  * @brief  The application entry point.
-  * @retval int
-  */
+ * @brief  The application entry point.
+ * @retval int
+ */
+
 int main(void)
 {
 
   /* USER CODE BEGIN 1 */
+  hlcd1.hi2c = &hi2c1;
+  hlcd1.address = 0x27 << 1;
+
+  hsht3x.i2c_handle = &hi2c1;
+  hsht3x.device_address = 0x44;
 
   /* USER CODE END 1 */
 
@@ -95,6 +124,8 @@ int main(void)
   HAL_Init();
 
   /* USER CODE BEGIN Init */
+  sht3x_init(&hsht3x);
+  lcd_init(&hlcd1);
 
   /* USER CODE END Init */
 
@@ -112,40 +143,90 @@ int main(void)
   MX_I2C1_Init();
   MX_USART1_UART_Init();
   /* USER CODE BEGIN 2 */
+  // 2. Khởi tạo cấu trúc quản lý task
+
+  program.period = 1000; // Mặc định ban đầu P = 500ms
+  // Cấp các con trỏ handle (tùy vào tên khai báo trong main.h)
+
+  program.huart1 = &huart1;
+  program.hlcd1 = &hlcd1;
+  program.hsht3x = &hsht3x;
+
+  // 3. Khởi động các chế độ ngắt và DMA
+
+  HAL_UARTEx_ReceiveToIdle_DMA(program.huart1, rx_buffer, 15); // Lắng nghe UART
   HAL_TIM_Base_Start_IT(&htim2);
-  //HAL_UARTEx_ReceiveToIdle_DMA(program.huart1, rx_buffer, 15);
+  HAL_UARTEx_ReceiveToIdle_DMA(program.huart1, rx_buffer, 15);
+
+  snprintf(disp, sizeof(disp), "P:%dms", program.period);
+
+  lcd_gotoxy(program.hlcd1, 0, 1);
+
+  lcd_puts(program.hlcd1, disp);
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
-  Update_Scheduler_Period(10000);
+  // Update_Scheduler_Period(10000);
+
+  uint32_t last_time = HAL_GetTick();
+  int k = 0;
   while (1)
   {
-	  //take_uart();
+    // take_uart();
 
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+    // --- NHÓM TASK ĐỊNH KỲ (Time-Triggered) ---
 
-	  //if(timer_flag == 1){
-//		  read_sensor();
-//	  }
+    // Kiểm tra nếu đã đủ thời gian P (tính bằng tick_count * 10ms)
+
+    // if (HAL_GetTick()-last_time>program.period)
+    // {
+    //   last_time+=program.period;
+    //   update_sensor_data(); // Đọc cảm biến
+
+    //   display_temp(); // Hiển thị LCD
+    //   display_humid();
+
+    //   send_temp_uart(); // Gửi dữ liệu lên máy tính
+    //   send_humid_uart();
+
+    //   tick_count = 0; // Reset bộ đếm cho chu kỳ tiếp theo
+    // }
+
+    // // --- NHÓM TASK ĐÁP ỨNG NHANH (Background Task) ---
+    // // Luôn chạy để bắt lệnh "SET:xxxx" và phản hồi log ngay lập tức
+    // take_uart();
+    // send_log_uart();
+
+    // Mo hinh don nhiem 2:
+    if (tick_count > program.period)
+    {
+      tick_count = 0;
+      if (k == TASK_COUNT) k = 0;
+      TaskTable[k]();
+      k++;
+    }
+    take_uart();
+    send_log_uart();
   }
   /* USER CODE END 3 */
 }
 
 /**
-  * @brief System Clock Configuration
-  * @retval None
-  */
+ * @brief System Clock Configuration
+ * @retval None
+ */
 void SystemClock_Config(void)
 {
   RCC_OscInitTypeDef RCC_OscInitStruct = {0};
   RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
 
   /** Initializes the RCC Oscillators according to the specified parameters
-  * in the RCC_OscInitTypeDef structure.
-  */
+   * in the RCC_OscInitTypeDef structure.
+   */
   RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSE;
   RCC_OscInitStruct.HSEState = RCC_HSE_ON;
   RCC_OscInitStruct.HSEPredivValue = RCC_HSE_PREDIV_DIV1;
@@ -159,9 +240,8 @@ void SystemClock_Config(void)
   }
 
   /** Initializes the CPU, AHB and APB buses clocks
-  */
-  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
-                              |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
+   */
+  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK | RCC_CLOCKTYPE_SYSCLK | RCC_CLOCKTYPE_PCLK1 | RCC_CLOCKTYPE_PCLK2;
   RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
   RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
   RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV2;
@@ -174,10 +254,10 @@ void SystemClock_Config(void)
 }
 
 /**
-  * @brief I2C1 Initialization Function
-  * @param None
-  * @retval None
-  */
+ * @brief I2C1 Initialization Function
+ * @param None
+ * @retval None
+ */
 static void MX_I2C1_Init(void)
 {
 
@@ -204,14 +284,13 @@ static void MX_I2C1_Init(void)
   /* USER CODE BEGIN I2C1_Init 2 */
 
   /* USER CODE END I2C1_Init 2 */
-
 }
 
 /**
-  * @brief TIM2 Initialization Function
-  * @param None
-  * @retval None
-  */
+ * @brief TIM2 Initialization Function
+ * @param None
+ * @retval None
+ */
 static void MX_TIM2_Init(void)
 {
 
@@ -223,12 +302,12 @@ static void MX_TIM2_Init(void)
   TIM_MasterConfigTypeDef sMasterConfig = {0};
 
   /* USER CODE BEGIN TIM2_Init 1 */
-
+  // 36Mhz
   /* USER CODE END TIM2_Init 1 */
   htim2.Instance = TIM2;
-  htim2.Init.Prescaler = 7199;
+  htim2.Init.Prescaler = 35;
   htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim2.Init.Period = 2000;
+  htim2.Init.Period = 999;
   htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
   if (HAL_TIM_Base_Init(&htim2) != HAL_OK)
@@ -249,14 +328,13 @@ static void MX_TIM2_Init(void)
   /* USER CODE BEGIN TIM2_Init 2 */
 
   /* USER CODE END TIM2_Init 2 */
-
 }
 
 /**
-  * @brief USART1 Initialization Function
-  * @param None
-  * @retval None
-  */
+ * @brief USART1 Initialization Function
+ * @param None
+ * @retval None
+ */
 static void MX_USART1_UART_Init(void)
 {
 
@@ -282,12 +360,11 @@ static void MX_USART1_UART_Init(void)
   /* USER CODE BEGIN USART1_Init 2 */
 
   /* USER CODE END USART1_Init 2 */
-
 }
 
 /**
-  * Enable DMA controller clock
-  */
+ * Enable DMA controller clock
+ */
 static void MX_DMA_Init(void)
 {
 
@@ -298,14 +375,13 @@ static void MX_DMA_Init(void)
   /* DMA1_Channel5_IRQn interrupt configuration */
   HAL_NVIC_SetPriority(DMA1_Channel5_IRQn, 0, 0);
   HAL_NVIC_EnableIRQ(DMA1_Channel5_IRQn);
-
 }
 
 /**
-  * @brief GPIO Initialization Function
-  * @param None
-  * @retval None
-  */
+ * @brief GPIO Initialization Function
+ * @param None
+ * @retval None
+ */
 static void MX_GPIO_Init(void)
 {
   GPIO_InitTypeDef GPIO_InitStruct = {0};
@@ -335,45 +411,50 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
+
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
-    if (htim->Instance == TIM2) // Kiểm tra đúng Timer2
-    {
-    	HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_13);
-        //timer_flag = 1; // Dựng cờ để thông báo cho main loop
-    }
+  if (htim->Instance == TIM2) // Kiểm tra đúng Timer2
+  {
+    tick_count++;
+  }
 }
+// void HAL_SYSTICK_Callback(void)
+// {
+//   tick_count++;
+// }
 // Định nghĩa nội dung các Task
-//void Task1(void) {
+// void Task1(void) {
 //    // Code đọc cảm biến hoặc xử lý logic 1
 //    // Lưu ý: Tuyệt đối không dùng HAL_Delay() ở đây
 //}
 //
-//void Task2(void) {
+// void Task2(void) {
 //    // Code xử lý dữ liệu hoặc logic 2
 //}
 //
-//void Task3(void) {
+// void Task3(void) {
 //    // Code xuất tín hiệu điều khiển hoặc hiển thị
 //}
 // Hàm update P
-void Update_Scheduler_Period(uint32_t new_p_ms) {
-    // (Ví dụ: Clock 72MHz, Prescaler = 7199)
+void Update_Scheduler_Period(uint32_t new_p_ms)
+{
+  // (Ví dụ: Clock 72MHz, Prescaler = 7199)
 
-    uint32_t new_arr = new_p_ms - 1;
+  uint32_t new_arr = new_p_ms - 1;
 
-    // Cập nhật giá trị mới vào thanh ghi ARR của Timer
-    __HAL_TIM_SET_AUTORELOAD(&htim2, new_arr);
+  // Cập nhật giá trị mới vào thanh ghi ARR của Timer
+  __HAL_TIM_SET_AUTORELOAD(&htim2, new_arr);
 
-    // Đảm bảo Timer cập nhật giá trị ngay lập tức
-    HAL_TIM_GenerateEvent(&htim2, TIM_EVENTSOURCE_UPDATE);
+  // Đảm bảo Timer cập nhật giá trị ngay lập tức
+  HAL_TIM_GenerateEvent(&htim2, TIM_EVENTSOURCE_UPDATE);
 }
 /* USER CODE END 4 */
 
 /**
-  * @brief  This function is executed in case of error occurrence.
-  * @retval None
-  */
+ * @brief  This function is executed in case of error occurrence.
+ * @retval None
+ */
 void Error_Handler(void)
 {
   /* USER CODE BEGIN Error_Handler_Debug */
@@ -386,12 +467,12 @@ void Error_Handler(void)
 }
 #ifdef USE_FULL_ASSERT
 /**
-  * @brief  Reports the name of the source file and the source line number
-  *         where the assert_param error has occurred.
-  * @param  file: pointer to the source file name
-  * @param  line: assert_param error line source number
-  * @retval None
-  */
+ * @brief  Reports the name of the source file and the source line number
+ *         where the assert_param error has occurred.
+ * @param  file: pointer to the source file name
+ * @param  line: assert_param error line source number
+ * @retval None
+ */
 void assert_failed(uint8_t *file, uint32_t line)
 {
   /* USER CODE BEGIN 6 */
